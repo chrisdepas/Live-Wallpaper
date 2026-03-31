@@ -78,10 +78,12 @@ class Wallpaper : WallpaperService() {
 
         private fun drawFrame(canvas: Canvas) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && shader != null) {
-                val time = (System.currentTimeMillis() - startTime) / 1000f
+                // Mod to avoid floating point err buildup
+                // This causes a periodic skip so need better solution
+                val time = (System.currentTimeMillis() % 1000000) / 1000f
                 shader?.apply {
                     setFloatUniform("iResolution", canvas.width.toFloat(), canvas.height.toFloat())
-                    setFloatUniform("iTime", time)
+                    setFloatUniform("iTime", time);
                 }
                 paint.shader = shader
                 canvas.drawRect(0f, 0f, canvas.width.toFloat(), canvas.height.toFloat(), paint)

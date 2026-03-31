@@ -2,6 +2,8 @@ uniform float2 iResolution;
 uniform float iTime;
 
 const float3 NEON_GREEN = float3(0.71, 0.95, 0.05);
+const float FLY_SPEED = 0.1;
+const float ROTATE_SPEED = 0.15;
 
 float sdBox(float3 p, float3 b) {
     float3 q = abs(p) - b;
@@ -42,12 +44,16 @@ half4 main(float2 fragCoord) {
 
     // Offset camera to fly in the gap between objects
     float spacing = 2.5;
-    float3 ro = float3(spacing * 0.5, spacing * 0.5 + iTime * 1.5, iTime * 1.5);
+    float3 ro = float3(
+        spacing * 0.5,
+        spacing * 0.5 + iTime * FLY_SPEED,
+        iTime * FLY_SPEED
+    );
 
     float3 rd = normalize(float3(uv, 1.2));
 
     // Rotate view over time
-    float angle = iTime * 0.2;
+    float angle = iTime * ROTATE_SPEED;
     float s = sin(angle);
     float c = cos(angle);
     float2x2 rot = float2x2(c, s, -s, c);
