@@ -5,6 +5,13 @@ const float3 NEON_GREEN = float3(0.71, 0.95, 0.05);
 const float FLY_SPEED = 0.1;
 const float ROTATE_SPEED = 0.15;
 
+// Deterministic pseudorandom hash
+float hash13(float3 p3) {
+    p3  = fract(p3 * .1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
 float sdBox(float3 p, float3 b) {
     float3 q = abs(p) - b;
     return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
@@ -18,17 +25,25 @@ float sdCross(float3 p) {
     return min(da, db);
 }
 
+float sdTorus(float3 p, float2 t) {
+    float2 q = float2(length(p.xz) - t.x, p.y);
+    return length(q) - t.y;
+}
+
 float map(float3 p) {
     float spacing = 2.5;
+    float3 id = floor((p + spacing * 0.5) / spacing);
     float3 q = mod(p + spacing * 0.5, spacing) - spacing * 0.5;
 
-    // Multi-axis rotation depending on depth
-    float angle1 = iTime * 0.6 + p.z * 0.3;
+    // Use cell ID for rotation phase instead of global position.
+    // This ensures that the distance field remains a mathematically "pure" SDF within each cell,
+    // preventing artifacts caused by gradient distortion (non-metric SDFs).
+    float angle1 = iTime * 0.6 + id.z * 0.5 + id.x * 0.2;
     float s1 = sin(angle1);
     float c1 = cos(angle1);
     float2x2 rot1 = float2x2(c1, s1, -s1, c1);
 
-    float angle2 = iTime * 0.4 + p.z * 0.2;
+    float angle2 = iTime * 0.4 + id.y * 0.3;
     float s2 = sin(angle2);
     float c2 = cos(angle2);
     float2x2 rot2 = float2x2(c2, s2, -s2, c2);
@@ -36,13 +51,28 @@ float map(float3 p) {
     q.xy *= rot1;
     q.xz *= rot2;
 
-    return sdCross(q);
+    float h = hash13(id);
+    if (h < 0.5) {
+        return sdCross(q);
+    } else {
+        return sdTorus(q, float2(0.35, 0.1));
+    }
+}
+
+float3 normal(float3 p) {
+    // Increased precision for normal calculation
+    const float2 h = float2(0.0002, -0.0002);
+    return normalize(
+        h.xyy * map(p + h.xyy) +
+        h.yyx * map(p + h.yyx) +
+        h.yxy * map(p + h.yxy) +
+        h.xxx * map(p + h.xxx)
+    );
 }
 
 half4 main(float2 fragCoord) {
     float2 uv = (fragCoord * 2.0 - iResolution.xy) / iResolution.y;
 
-    // Offset camera to fly in the gap between objects
     float spacing = 2.5;
     float3 ro = float3(
         spacing * 0.5,
@@ -52,7 +82,6 @@ half4 main(float2 fragCoord) {
 
     float3 rd = normalize(float3(uv, 1.2));
 
-    // Rotate view over time
     float angle = iTime * ROTATE_SPEED;
     float s = sin(angle);
     float c = cos(angle);
@@ -62,67 +91,48 @@ half4 main(float2 fragCoord) {
 
     float maxDist = 20.0;
     float t = 0.0;
-    for (int i = 0; i < 100; i++) {
+
+    // Increased iterations and more conservative stepping (0.8) to eliminate artifacts
+    for (int i = 0; i < 160; i++) {
         float3 p = ro + rd * t;
         float d = map(p);
-        if (d < 0.001 || t > maxDist) break;
-        t += d;
+        if (d < 0.0001 || t > maxDist) {
+            break;
+        }
+        t += d * 0.85;
     }
 
-    // Background color, also used for fog
     float3 bgCol = float3(0.0, 0.0, 0.0);
     float3 col = bgCol;
 
     if (t < maxDist) {
         float3 p = ro + rd * t;
+        float3 n = normal(p);
 
-        // Approximate normal
-        float2 e = float2(0.001, 0.0);
-        float3 n = normalize(float3(
-            map(p + e.xyy) - map(p - e.xyy),
-            map(p + e.yxy) - map(p - e.yxy),
-            map(p + e.yyx) - map(p - e.yyx)
-        ));
-
-        // Lighting setup
-        float3 lightDir = normalize(float3(
-            sin(iTime * 0.55) * 1.5,
-            sin(iTime * 0.15) * 2.0,
-            -2.0
-        ));
         float3 viewDir = -rd;
-        float3 halfDir = normalize(lightDir + viewDir);
+        float3 lightDir = viewDir;
+        float3 halfDir = viewDir;
 
-        // Diffuse
         float diff = max(dot(n, lightDir), 0.0);
-
-        // Specular
         float spec = pow(max(dot(n, halfDir), 0.0), 264.0);
 
-        // Color cycle based on position/time
-        float3 baseCol = 0.5 + 0.5 * cos(iTime + p.z * 0.2 + float3(0, 2, 4));
+        float3 baseCol = 0.5 + 0.5 * cos(iTime + (p.z + p.x + p.y) * 0.2 + float3(0, 2, 4));
 
-        // Combine lighting
         float3 objCol = baseCol * diff;
         objCol += float3(1.0) * spec;
 
-        // Shiny highlights
         float spec2 = pow(max(dot(n, halfDir), 0.0), 128.0);
         objCol += float3(0.6) * spec2;
 
-        // Rim lighting
         float rim = pow(1.0 - max(dot(n, viewDir), 0.0), 4.0);
         objCol += rim * NEON_GREEN * 0.5;
 
-        objCol += 0.05 * baseCol; // Ambient
+        objCol += 0.05 * baseCol;
 
-        // Smooth fog fade
         float fog = smoothstep(maxDist, maxDist * 0.5, t);
         col = mix(bgCol, objCol, fog);
     }
 
-    // Gamma correction
     col = pow(col, float3(0.4545));
-
     return col.rgb1;
 }
